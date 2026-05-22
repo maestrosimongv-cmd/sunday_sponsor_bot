@@ -60,7 +60,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
     await state.set_state(SponsorReg.choosing_time)
 
-# Администратор: отправка кнопки в тот чат, где написана команда
 @dp.message(Command("start_collection"))
 async def start_collection(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -75,7 +74,6 @@ async def start_collection(message: types.Message):
         "*Нажмите кнопку, чтобы зарегистрироваться:*",
         reply_markup=inline_kb, parse_mode="Markdown"
     )
-    # Дополнительно отправляем уведомление админу, что всё ок
     await bot.send_message(ADMIN_IDS[0], "✅ *Кнопка сбора отправлена в чат.*", parse_mode="Markdown")
 
 @dp.callback_query(lambda c: c.data == "start_join")
@@ -100,7 +98,6 @@ async def time_chosen(callback: types.CallbackQuery, state: FSMContext):
 
     conn = await get_db_connection()
     try:
-        # Проверка повторной регистрации за 48 часов
         check_query = """
             SELECT EXISTS(
                 SELECT 1 FROM sponsors s
@@ -169,7 +166,6 @@ async def party_count_entered(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # Повторная проверка (48 часов)
         check_query = """
             SELECT EXISTS(
                 SELECT 1 FROM sponsors s
@@ -199,7 +195,6 @@ async def party_count_entered(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
-        # Удаление диалога через 48 часов
         asyncio.create_task(delete_dialog_later(message.chat.id, 48 * 3600))
 
         if new_count == MAX_PER_SLOT:
@@ -247,7 +242,7 @@ async def delete_dialog_later(chat_id: int, delay_seconds: int):
 
 async def reminder_worker():
     while True:
-        now = datetime.utcnow() + timedelta(hours=3)  # МСК = UTC+3
+        now = datetime.utcnow() + timedelta(hours=3)
         target_hour = now.hour + 1
         conn = await get_db_connection()
         try:
@@ -296,7 +291,6 @@ async def cmd_stats(message: types.Message):
     finally:
         await conn.close()
 
-# Автосброс каждые 48 часов
 async def reset_slots_48h():
     while True:
         await asyncio.sleep(48 * 3600)
