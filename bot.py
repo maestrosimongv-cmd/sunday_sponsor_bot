@@ -1,5 +1,6 @@
 import asyncio
 import asyncpg
+import os
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -7,24 +8,26 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 
-# ========== КОНФИГУРАЦИЯ ==========
-API_TOKEN = '8659440760:AAGxcuLvyP8oeU5Mmt8g_6kxIwaULdUtZHM'
-ADMIN_IDS = [235845445]   # ваш Telegram ID
-DATABASE_URL = 'postgresql://neondb_owner:npg_bGuoEjZJt61D@ep-delicate-mountain-alf99j5d.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require'
-CHANNEL_ID = None   # НЕ ПРИВЯЗАН К КАНАЛУ – команда /start_collection отправляется в тот чат, где её вызвали
+# ========== КОНФИГУРАЦИЯ (из переменных окружения) ==========
+API_TOKEN = os.getenv('BOT_TOKEN')
+DATABASE_URL = os.getenv('DATABASE_URL')
+ADMIN_IDS = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '235845445').split(',')]
 MAX_PER_SLOT = 16
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+# --- Состояния FSM ---
 class SponsorReg(StatesGroup):
     choosing_time = State()
     entering_nickname = State()
     entering_party_count = State()
 
+# --- Функция подключения к БД ---
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
 
+# --- Получение доступных слотов ---
 async def get_available_slots():
     conn = await get_db_connection()
     try:
@@ -36,6 +39,7 @@ async def get_available_slots():
     finally:
         await conn.close()
 
+# --- Клавиатура с доступными часами ---
 async def get_time_keyboard():
     slots = await get_available_slots()
     if not slots:
@@ -47,6 +51,7 @@ async def get_time_keyboard():
         kb.inline_keyboard.append([InlineKeyboardButton(text=button_text, callback_data=f"time_{slot['slot_id']}")])
     return kb
 
+# --- Команда /start (для пользователей) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -60,6 +65,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
     await state.set_state(SponsorReg.choosing_time)
 
+# --- Команда /start_collection (только для администратора) ---
 @dp.message(Command("start_collection"))
 async def start_collection(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -76,6 +82,7 @@ async def start_collection(message: types.Message):
     )
     await bot.send_message(ADMIN_IDS[0], "✅ *Кнопка сбора отправлена в чат.*", parse_mode="Markdown")
 
+# --- Обработчик кнопки "Начать сбор" ---
 @dp.callback_query(lambda c: c.data == "start_join")
 async def start_join_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -90,6 +97,7 @@ async def start_join_callback(callback: types.CallbackQuery, state: FSMContext):
     )
     await state.set_state(SponsorReg.choosing_time)
 
+# --- Обработка выбора времени ---
 @dp.callback_query(SponsorReg.choosing_time, lambda c: c.data.startswith("time_"))
 async def time_chosen(callback: types.CallbackQuery, state: FSMContext):
     slot_id = int(callback.data.split("_")[1])
@@ -131,6 +139,7 @@ async def time_chosen(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("*Введите ваш ник и тег (например, Simson idumx):*", parse_mode="Markdown")
     await state.set_state(SponsorReg.entering_nickname)
 
+# --- Ввод ника/тега ---
 @dp.message(SponsorReg.entering_nickname)
 async def nickname_entered(message: types.Message, state: FSMContext):
     nickname = message.text.strip()
@@ -141,6 +150,7 @@ async def nickname_entered(message: types.Message, state: FSMContext):
     await message.answer("*Сколько пати вы даете? (введите число):*", parse_mode="Markdown")
     await state.set_state(SponsorReg.entering_party_count)
 
+# --- Ввод количества пати ---
 @dp.message(SponsorReg.entering_party_count)
 async def party_count_entered(message: types.Message, state: FSMContext):
     try:
@@ -195,6 +205,7 @@ async def party_count_entered(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
+        # Автоудаление диалога через 48 часов
         asyncio.create_task(delete_dialog_later(message.chat.id, 48 * 3600))
 
         if new_count == MAX_PER_SLOT:
@@ -211,6 +222,7 @@ async def party_count_entered(message: types.Message, state: FSMContext):
         reply_markup=inline_kb, parse_mode="Markdown"
     )
 
+# --- Отправка отчёта администратору ---
 async def send_slot_report(slot_id: int, conn):
     slot = await conn.fetchrow("SELECT hour_time, current_count FROM time_slots WHERE slot_id = $1", slot_id)
     if not slot:
@@ -232,6 +244,7 @@ async def send_slot_report(slot_id: int, conn):
         except:
             pass
 
+# --- Функция автоудаления диалога ---
 async def delete_dialog_later(chat_id: int, delay_seconds: int):
     await asyncio.sleep(delay_seconds)
     try:
@@ -240,9 +253,10 @@ async def delete_dialog_later(chat_id: int, delay_seconds: int):
     except Exception as e:
         print(f"Ошибка при удалении диалога: {e}")
 
+# --- Функция напоминания за час до пати ---
 async def reminder_worker():
     while True:
-        now = datetime.utcnow() + timedelta(hours=3)
+        now = datetime.utcnow() + timedelta(hours=3)  # МСК
         target_hour = now.hour + 1
         conn = await get_db_connection()
         try:
@@ -275,6 +289,7 @@ async def reminder_worker():
             await conn.close()
         await asyncio.sleep(3600)
 
+# --- Команда /stats (админ) ---
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -291,6 +306,7 @@ async def cmd_stats(message: types.Message):
     finally:
         await conn.close()
 
+# --- Автосброс каждые 48 часов ---
 async def reset_slots_48h():
     while True:
         await asyncio.sleep(48 * 3600)
@@ -305,6 +321,7 @@ async def reset_slots_48h():
         finally:
             await conn.close()
 
+# --- Команда /reset_slots (админ, ручной сброс) ---
 @dp.message(Command("reset_slots"))
 async def cmd_reset(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -318,6 +335,7 @@ async def cmd_reset(message: types.Message):
     finally:
         await conn.close()
 
+# --- Запуск ---
 async def main():
     print("Бот запущен (лимит 16, автосброс 48ч, напоминания за час, удаление диалогов 48ч)...")
     await bot.delete_webhook(drop_pending_updates=True)
